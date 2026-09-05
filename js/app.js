@@ -343,7 +343,7 @@
       setTimeout(() => { toast('Welcome! Set up your profile to get a personalised calorie goal.', 4000); }, 600);
     }
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('sw.js').catch(() => {});
+      navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {});
     }
   }
 
