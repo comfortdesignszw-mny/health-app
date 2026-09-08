@@ -39,6 +39,7 @@
       </div>
       <div class="hero-stats">
         <div class="hero-stat-row"><span class="k">Eaten</span><span class="v" id="statEaten">0 kcal</span></div>
+        <div class="hero-stat-row"><span class="k">Burned</span><span class="v" id="statBurned" style="color:var(--good)">0 kcal</span></div>
         <div class="hero-stat-row"><span class="k">Goal</span><span class="v" id="statGoal">—</span></div>
         <div class="hero-stat-row"><span class="k">Protein</span><span class="v" id="statProtein">0 g</span></div>
         <div class="hero-stat-row"><span class="k">Meals logged</span><span class="v" id="statMeals">0</span></div>
@@ -67,6 +68,48 @@
     <div class="section-title">Today's meals</div>
     <div id="todayLogList"></div>
 
+    <div class="section-title">
+      <span>Recommended for today</span>
+      <span class="see-all" data-goto="fitness">Full plan &rarr;</span>
+    </div>
+    <div id="todayExerciseList"></div>
+
+    <div class="section-title">Step counter</div>
+    <div class="panel">
+      <div class="step-widget">
+        <div class="step-ring-wrap">
+          <svg width="88" height="88" viewBox="0 0 88 88">
+            <circle class="ring-track" cx="44" cy="44" r="37" fill="none" stroke-width="8"/>
+            <circle class="ring-progress" id="stepRingProgress" cx="44" cy="44" r="37" fill="none" stroke-width="8"
+              stroke-dasharray="232.5" stroke-dashoffset="232.5" style="stroke:var(--good)"/>
+          </svg>
+          <div class="step-ring-center">
+            <div class="num" id="stepCountNum">0</div>
+            <div class="lbl">steps</div>
+          </div>
+        </div>
+        <div class="step-widget-info">
+          <div class="goal" id="stepGoalLabel">Goal: 8,000 steps</div>
+          <button class="btn-secondary" id="btnToggleSteps">Start tracking</button>
+        </div>
+      </div>
+      <div class="row-between mt16" id="stepLogRow" style="display:none">
+        <span class="small muted">~<span id="stepKmEstimate">0</span> km walked</span>
+        <button class="btn-ghost" id="btnLogSteps">Log as exercise</button>
+      </div>
+      <p class="step-note" id="stepSupportNote"></p>
+    </div>
+
+    <div class="section-title">
+      <span>Log an exercise</span>
+    </div>
+    <div class="capture-row" style="margin-bottom:20px">
+      <button class="capture-btn" id="btnLogExercise" style="flex:none; width:100%; flex-direction:row; gap:10px; padding:16px">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 6.5l11 11M4 9l3-3 3 3M15 21l3-3-3-3M2 12h1M21 12h1M14.5 3l-3 3M20 9l-3 3"/></svg>
+        Running, walking, push-ups, sit-ups…
+      </button>
+    </div>
+
     <div class="section-title">Notes for today</div>
     <div id="tipsList"></div>
   </div>
@@ -80,8 +123,12 @@
       <button class="btn-ghost" id="histPrev">&larr; Previous day</button>
       <button class="btn-ghost" id="histToday">Today</button>
     </div>
+    <div class="stat-grid" style="margin-top:12px">
+      <div class="stat-box"><div class="num" id="histEaten" style="font-size:20px">0</div><div class="lbl">Eaten (kcal)</div></div>
+      <div class="stat-box"><div class="num" id="histBurned" style="font-size:20px;color:var(--good)">0</div><div class="lbl">Burned (kcal)</div></div>
+    </div>
     <div class="panel" style="margin-top:12px">
-      <div class="row-between"><span class="muted small">Total that day</span><span class="num" id="histTotal" style="font-size:20px">0 kcal</span></div>
+      <div class="row-between"><span class="muted small">Net for the day</span><span class="num" id="histTotal" style="font-size:20px">0 kcal</span></div>
     </div>
     <div id="histLogList" class="mt16"></div>
   </div>
@@ -119,6 +166,13 @@
       <div class="stat-box"><div class="num" id="tdeeVal">—</div><div class="lbl">Maintenance (TDEE) kcal/day</div></div>
       <div class="stat-box"><div class="num" id="goalVal">—</div><div class="lbl">Your calorie goal kcal/day</div></div>
     </div>
+
+    <div class="section-title">Weekly exercise plan</div>
+    <div class="week-strip" id="weekStrip"></div>
+    <div id="weekDayList"></div>
+
+    <div class="section-title">Exercise library</div>
+    <div class="ex-library-grid" id="exLibraryGrid"></div>
   </div>
 
   <!-- ===================== PROFILE ===================== -->
@@ -245,12 +299,38 @@
     </div>
   </div>
 
+  <!-- ===================== EXERCISE LOG SHEET ===================== -->
+  <div class="sheet-backdrop" id="exerciseSheetBackdrop">
+    <div class="sheet">
+      <div class="sheet-handle"></div>
+      <h3>Log exercise</h3>
+      <div class="sub">Pick what you did and how much — calories are calculated from your profile weight.</div>
+      <div class="field">
+        <label for="eType">Exercise</label>
+        <select id="eType"></select>
+      </div>
+      <div class="field">
+        <label for="eAmount" id="eAmountLabel">Amount</label>
+        <input type="number" id="eAmount" min="0" step="0.1">
+      </div>
+      <div class="panel row-between" style="margin-bottom:16px">
+        <span class="muted small">Estimated calories burned</span>
+        <span class="num" id="eCaloriesPreview" style="font-size:20px;color:var(--good)">0</span>
+      </div>
+      <button class="btn-primary" id="btnSaveExercise">Save to today's log</button>
+      <div style="height:8px"></div>
+      <button class="btn-ghost" id="btnCancelExercise">Cancel</button>
+    </div>
+  </div>
+
   <div class="toast" id="toast"></div>
 </div>
 
 <script src="/js/dexie.min.js"></script>
 <script src="/js/db.js"></script>
 <script src="/js/health.js"></script>
+<script src="/js/exercise.js"></script>
+<script src="/js/steps.js"></script>
 <script src="/js/ai.js"></script>
 <script src="/js/app.js"></script>
 </body>

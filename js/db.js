@@ -10,6 +10,16 @@ db.version(1).stores({
   weightLogs: '++id, date'                          // one row per weigh-in
 });
 
+// v2 adds exercise logging and daily step tracking. Existing installs
+// upgrade automatically the next time they open the app — no data is lost.
+db.version(2).stores({
+  profile: 'id',
+  foodLogs: '++id, date, timestamp',
+  weightLogs: '++id, date',
+  exerciseLogs: '++id, date, timestamp',            // one row per logged exercise
+  stepLogs: '++id, date'                            // one row per day of step tracking
+});
+
 const DEFAULT_PROFILE = {
   id: 1,
   name: '',
@@ -20,6 +30,7 @@ const DEFAULT_PROFILE = {
   activityLevel: 'light',   // sedentary | light | moderate | active | very_active
   goal: 'lose',             // lose | maintain | gain
   calorieGoalOverride: null,
+  stepGoal: 8000,
   aiProvider: 'anthropic',
   aiApiKey: '',
   aiModel: 'claude-sonnet-5',
@@ -86,4 +97,43 @@ async function addWeightLog(weightKg, date) {
 async function getRecentWeights(limit = 30) {
   const all = await db.weightLogs.orderBy('date').toArray();
   return all.slice(-limit);
+}
+
+// ---------------- Exercise logs ----------------
+async function addExerciseLog(entry) {
+  const row = {
+    date: entry.date || todayStr(),
+    timestamp: Date.now(),
+    exerciseId: entry.exerciseId,
+    label: entry.label || entry.exerciseId,
+    amount: entry.amount,
+    unit: entry.unit || '',
+    caloriesBurned: Math.round(entry.caloriesBurned || 0),
+    source: entry.source || 'manual'    // 'manual' | 'plan' | 'steps'
+  };
+  return db.exerciseLogs.add(row);
+}
+
+async function deleteExerciseLog(id) {
+  return db.exerciseLogs.delete(id);
+}
+
+async function getExerciseLogsForDate(date) {
+  return db.exerciseLogs.where('date').equals(date).sortBy('timestamp').then(r => r.reverse());
+}
+
+// ---------------- Step logs (one row per calendar day) ----------------
+async function getStepsForDate(date) {
+  const row = await db.stepLogs.where('date').equals(date).first();
+  return row ? row.steps : 0;
+}
+
+async function setStepsForDate(steps, date) {
+  const d = date || todayStr();
+  const existing = await db.stepLogs.where('date').equals(d).first();
+  if (existing) {
+    await db.stepLogs.update(existing.id, { steps: Math.round(steps) });
+    return existing.id;
+  }
+  return db.stepLogs.add({ date: d, steps: Math.round(steps) });
 }

@@ -1,10 +1,17 @@
 (() => {
   const RING_CIRC = 2 * Math.PI * 56; // 351.86
+  const STEP_RING_CIRC = 2 * Math.PI * 37; // 232.48
 
   let profile = null;
   let pendingPhotoFile = null;
   let pendingThumb = null;
   let historyDate = todayStr();
+  let selectedWeekDay = new Date().getDay();
+  let pendingExercisePrefill = null;
+
+  const stepCounter = StepCounter.isSupported() ? new StepCounter() : null;
+  let stepsTracking = false;
+  let currentSteps = 0;
 
   const $ = sel => document.querySelector(sel);
   const $$ = sel => Array.from(document.querySelectorAll(sel));
@@ -38,27 +45,73 @@
   async function renderToday() {
     $('#topDate').textContent = new Date().toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
 
-    const logs = await getLogsForDate(todayStr());
+    const [logs, exerciseLogs, todaySteps] = await Promise.all([
+      getLogsForDate(todayStr()),
+      getExerciseLogsForDate(todayStr()),
+      getStepsForDate(todayStr())
+    ]);
     const eaten = logs.reduce((s, l) => s + l.calories, 0);
+    const burned = exerciseLogs.reduce((s, l) => s + l.caloriesBurned, 0);
     const protein = logs.reduce((s, l) => s + (l.protein || 0), 0);
     const goal = calcCalorieGoal(profile);
-    const remaining = goal != null ? Math.max(goal - eaten, 0) : null;
+    // Exercise adds back to your allowance for the day, same idea most trackers use.
+    const effectiveGoal = goal != null ? goal + burned : null;
+    const remaining = effectiveGoal != null ? Math.max(effectiveGoal - eaten, 0) : null;
 
     $('#statEaten').textContent = `${eaten} kcal`;
+    $('#statBurned').textContent = `${burned} kcal`;
     $('#statGoal').textContent = goal != null ? `${goal} kcal` : 'Set up profile';
     $('#statProtein').textContent = `${Math.round(protein)} g`;
     $('#statMeals').textContent = logs.length;
-    $('#ringNum').textContent = goal != null ? Math.round(remaining) : '—';
+    $('#ringNum').textContent = effectiveGoal != null ? Math.round(remaining) : '—';
 
-    const frac = goal ? Math.min(eaten / goal, 1) : 0;
+    const frac = effectiveGoal ? Math.min(eaten / effectiveGoal, 1) : 0;
     const offset = RING_CIRC * (1 - frac);
     $('#ringProgress').style.strokeDashoffset = offset;
-    $('#ringProgress').style.stroke = goal && eaten > goal ? 'var(--warn)' : 'var(--accent)';
+    $('#ringProgress').style.stroke = effectiveGoal && eaten > effectiveGoal ? 'var(--warn)' : 'var(--accent)';
 
     renderLogList($('#todayLogList'), logs);
 
     const tips = dailyRecommendations({ profile, todayCalories: eaten, calorieGoal: goal });
     $('#tipsList').innerHTML = tips.map(t => `<div class="tip">${escapeHtml(t)}</div>`).join('');
+
+    renderTodayExercises(exerciseLogs);
+    initStepWidget(todaySteps);
+  }
+
+  // ---------------- Recommended exercises (Today) ----------------
+  function renderTodayExercises(exerciseLogsToday) {
+    const plan = getTodaysPlan(profile.activityLevel);
+    const container = $('#todayExerciseList');
+
+    if (!plan.length) {
+      container.innerHTML = `<div class="empty-state">Rest day — recovery is part of the plan too.</div>`;
+      return;
+    }
+
+    container.innerHTML = plan.map(item => {
+      const ex = EXERCISE_CATALOG[item.exerciseId];
+      const loggedForThis = exerciseLogsToday.filter(l => l.exerciseId === item.exerciseId);
+      const doneCal = loggedForThis.reduce((s, l) => s + l.caloriesBurned, 0);
+      const estCal = calcExerciseCalories(item.exerciseId, item.amount, profile.weightKg);
+      return `
+        <div class="exercise-card">
+          <div class="exercise-icon">${exerciseIconSvg(item.exerciseId)}</div>
+          <div class="exercise-info">
+            <div class="name">${ex.name}</div>
+            <div class="target">${item.amount} ${ex.unit} \u2248 ${estCal} kcal</div>
+          </div>
+          ${loggedForThis.length
+            ? `<span class="exercise-done">${doneCal} kcal &#10003;</span>`
+            : `<button class="exercise-log-btn" data-log-plan="${item.exerciseId}" data-amount="${item.amount}">Log</button>`}
+        </div>`;
+    }).join('');
+
+    container.querySelectorAll('[data-log-plan]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        openExerciseSheet({ exerciseId: btn.dataset.logPlan, amount: Number(btn.dataset.amount) });
+      });
+    });
   }
 
   function renderLogList(container, logs) {
@@ -197,6 +250,122 @@
     showScreen('today');
   });
 
+  function renderCombinedList(container, foodItems, exerciseItems) {
+    const combined = [
+      ...foodItems.map(l => ({ kind: 'food', ...l })),
+      ...exerciseItems.map(l => ({ kind: 'exercise', ...l }))
+    ].sort((a, b) => b.timestamp - a.timestamp);
+
+    if (!combined.length) {
+      container.innerHTML = `<div class="empty-state">Nothing logged for this day yet.</div>`;
+      return;
+    }
+
+    container.innerHTML = combined.map(l => {
+      if (l.kind === 'food') {
+        return `
+          <div class="log-item" data-id="${l.id}">
+            ${l.photo ? `<img class="log-thumb" src="${l.photo}" alt="">` : `<div class="log-thumb placeholder">\u{1F37D}</div>`}
+            <div class="log-info">
+              <div class="name">${escapeHtml(l.name)}</div>
+              <div class="meta">${escapeHtml(l.portion || '')}${l.source === 'ai' ? ' \u00b7 AI estimate' : ''}</div>
+            </div>
+            <div class="log-cal">+${l.calories}</div>
+            <button class="log-del" data-del-food="${l.id}" aria-label="Delete">&times;</button>
+          </div>`;
+      }
+      return `
+        <div class="log-item burn" data-id="${l.id}">
+          <div class="log-thumb placeholder">${exerciseIconSvg(l.exerciseId, 22)}</div>
+          <div class="log-info">
+            <div class="name">${escapeHtml(l.label)}</div>
+            <div class="meta">${l.amount} ${l.unit}${l.source === 'steps' ? ' \u00b7 from step count' : ''}</div>
+          </div>
+          <div class="log-cal">\u2212${l.caloriesBurned}</div>
+          <button class="log-del" data-del-exercise="${l.id}" aria-label="Delete">&times;</button>
+        </div>`;
+    }).join('');
+
+    container.querySelectorAll('[data-del-food]').forEach(btn => {
+      btn.addEventListener('click', async e => {
+        e.stopPropagation();
+        await deleteFoodLog(Number(btn.dataset.delFood));
+        toast('Removed');
+        showScreen(currentScreenName());
+      });
+    });
+    container.querySelectorAll('[data-del-exercise]').forEach(btn => {
+      btn.addEventListener('click', async e => {
+        e.stopPropagation();
+        await deleteExerciseLog(Number(btn.dataset.delExercise));
+        toast('Removed');
+        showScreen(currentScreenName());
+      });
+    });
+  }
+
+  // ---------------- Exercise log sheet ----------------
+  function populateExerciseSelect() {
+    const sel = $('#eType');
+    sel.innerHTML = Object.values(EXERCISE_CATALOG).map(ex =>
+      `<option value="${ex.id}">${ex.name}</option>`
+    ).join('');
+  }
+
+  function updateExerciseAmountLabel() {
+    const ex = EXERCISE_CATALOG[$('#eType').value];
+    $('#eAmountLabel').textContent = `Amount (${ex.unit})`;
+    $('#eAmount').step = ex.step;
+  }
+
+  function updateExerciseCaloriePreview() {
+    const exId = $('#eType').value;
+    const amount = Number($('#eAmount').value) || 0;
+    const cal = calcExerciseCalories(exId, amount, profile.weightKg);
+    $('#eCaloriesPreview').textContent = cal;
+  }
+
+  $('#eType').addEventListener('change', () => { updateExerciseAmountLabel(); updateExerciseCaloriePreview(); });
+  $('#eAmount').addEventListener('input', updateExerciseCaloriePreview);
+
+  function openExerciseSheet(prefill) {
+    pendingExercisePrefill = prefill || null;
+    $('#exerciseSheetBackdrop').classList.add('open');
+    if (prefill && prefill.exerciseId) {
+      $('#eType').value = prefill.exerciseId;
+    }
+    updateExerciseAmountLabel();
+    $('#eAmount').value = prefill && prefill.amount ? prefill.amount : '';
+    updateExerciseCaloriePreview();
+  }
+
+  function closeExerciseSheet() {
+    $('#exerciseSheetBackdrop').classList.remove('open');
+    pendingExercisePrefill = null;
+  }
+
+  $('#btnLogExercise').addEventListener('click', () => openExerciseSheet(null));
+  $('#btnCancelExercise').addEventListener('click', closeExerciseSheet);
+
+  $('#btnSaveExercise').addEventListener('click', async () => {
+    const exId = $('#eType').value;
+    const ex = EXERCISE_CATALOG[exId];
+    const amount = Number($('#eAmount').value);
+    if (!amount || amount <= 0) { toast(`Enter a ${ex.unit} amount greater than 0`); return; }
+    const caloriesBurned = calcExerciseCalories(exId, amount, profile.weightKg);
+    await addExerciseLog({
+      exerciseId: exId,
+      label: ex.name,
+      amount,
+      unit: ex.unit,
+      caloriesBurned,
+      source: pendingExercisePrefill && pendingExercisePrefill.source ? pendingExercisePrefill.source : (pendingExercisePrefill ? 'plan' : 'manual')
+    });
+    closeExerciseSheet();
+    toast(`Logged ${caloriesBurned} kcal burned`);
+    showScreen('today');
+  });
+
   // ---------------- History screen ----------------
   $('#histPrev').addEventListener('click', () => shiftHistoryDate(-1));
   $('#histToday').addEventListener('click', () => { historyDate = todayStr(); renderHistory(); });
@@ -210,10 +379,16 @@
 
   async function renderHistory() {
     $('#logDateLabel').textContent = fmtDateHeading(historyDate);
-    const logs = await getLogsForDate(historyDate);
-    const total = logs.reduce((s, l) => s + l.calories, 0);
-    $('#histTotal').textContent = `${total} kcal`;
-    renderLogList($('#histLogList'), logs);
+    const [logs, exerciseLogs] = await Promise.all([
+      getLogsForDate(historyDate),
+      getExerciseLogsForDate(historyDate)
+    ]);
+    const eaten = logs.reduce((s, l) => s + l.calories, 0);
+    const burned = exerciseLogs.reduce((s, l) => s + l.caloriesBurned, 0);
+    $('#histEaten').textContent = eaten;
+    $('#histBurned').textContent = burned;
+    $('#histTotal').textContent = `${eaten - burned} kcal`;
+    renderCombinedList($('#histLogList'), logs, exerciseLogs);
   }
 
   // ---------------- Fitness screen ----------------
@@ -258,6 +433,68 @@
 
     const weights = await getRecentWeights(10);
     renderWeightTrend(weights);
+
+    renderWeekStrip();
+    renderWeekDayList();
+    renderExerciseLibrary();
+  }
+
+  function renderWeekStrip() {
+    const container = $('#weekStrip');
+    const actualToday = new Date().getDay();
+    container.innerHTML = DAY_NAMES.map((name, i) => {
+      const isToday = i === actualToday;
+      const isSelected = i === selectedWeekDay;
+      return `<button class="week-day-btn ${isToday ? 'today' : ''} ${isSelected ? 'selected' : ''}" data-day="${i}">${name.slice(0, 3)}</button>`;
+    }).join('');
+    container.querySelectorAll('[data-day]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        selectedWeekDay = Number(btn.dataset.day);
+        renderWeekStrip();
+        renderWeekDayList();
+      });
+    });
+  }
+
+  function renderWeekDayList() {
+    const container = $('#weekDayList');
+    const items = getPlanForDay(profile.activityLevel, selectedWeekDay);
+    const isActualToday = selectedWeekDay === new Date().getDay();
+
+    if (!items.length) {
+      container.innerHTML = `<div class="empty-state">Rest day \u2014 recovery counts too.</div>`;
+      return;
+    }
+
+    container.innerHTML = items.map(item => {
+      const ex = EXERCISE_CATALOG[item.exerciseId];
+      const estCal = calcExerciseCalories(item.exerciseId, item.amount, profile.weightKg);
+      return `
+        <div class="exercise-card">
+          <div class="exercise-icon">${exerciseIconSvg(item.exerciseId)}</div>
+          <div class="exercise-info">
+            <div class="name">${ex.name}</div>
+            <div class="target">${item.amount} ${ex.unit} \u2248 ${estCal} kcal</div>
+          </div>
+          ${isActualToday ? `<button class="exercise-log-btn" data-log-week="${item.exerciseId}" data-amount="${item.amount}">Log</button>` : ''}
+        </div>`;
+    }).join('');
+
+    if (isActualToday) {
+      container.querySelectorAll('[data-log-week]').forEach(btn => {
+        btn.addEventListener('click', () => openExerciseSheet({ exerciseId: btn.dataset.logWeek, amount: Number(btn.dataset.amount) }));
+      });
+    }
+  }
+
+  function renderExerciseLibrary() {
+    $('#exLibraryGrid').innerHTML = Object.values(EXERCISE_CATALOG).map(ex => `
+      <div class="ex-library-item">
+        <div class="exercise-icon">${exerciseIconSvg(ex.id, 26)}</div>
+        <div class="name">${ex.name}</div>
+        <div class="desc">${ex.desc}</div>
+      </div>
+    `).join('');
   }
 
   function renderWeightTrend(weights) {
@@ -280,6 +517,65 @@
     $('#weightInput').value = '';
     toast('Weight logged');
     renderFitness();
+  });
+
+  // ---------------- Step counter ----------------
+  function initStepWidget(startingSteps) {
+    currentSteps = startingSteps || 0;
+    updateStepUI(currentSteps);
+
+    if (!stepCounter) {
+      $('#btnToggleSteps').disabled = true;
+      $('#btnToggleSteps').textContent = 'Not supported';
+      $('#stepSupportNote').textContent = 'This browser/device doesn\u2019t expose a motion sensor, so live step tracking isn\u2019t available here. You can still log a walk or run manually below.';
+    } else if (!stepsTracking) {
+      $('#stepSupportNote').textContent = 'Tracks steps using your phone\u2019s motion sensor while this app is open and the screen is on \u2014 like a native pedometer, it can\u2019t count steps once the app is closed or the screen locks.';
+    }
+  }
+
+  function updateStepUI(steps) {
+    $('#stepCountNum').textContent = steps.toLocaleString();
+    const goal = profile.stepGoal || 8000;
+    $('#stepGoalLabel').textContent = `Goal: ${goal.toLocaleString()} steps`;
+    const frac = Math.min(steps / goal, 1);
+    $('#stepRingProgress').style.strokeDashoffset = STEP_RING_CIRC * (1 - frac);
+    const km = stepsToKm(steps);
+    $('#stepKmEstimate').textContent = km.toFixed(1);
+    $('#stepLogRow').style.display = steps > 0 ? 'flex' : 'none';
+  }
+
+  $('#btnToggleSteps').addEventListener('click', async () => {
+    if (!stepCounter) return;
+
+    if (stepsTracking) {
+      stepCounter.stop();
+      stepsTracking = false;
+      $('#btnToggleSteps').textContent = 'Start tracking';
+      await setStepsForDate(currentSteps);
+      return;
+    }
+
+    if (StepCounter.needsIOSPermission()) {
+      const perm = await StepCounter.requestPermission();
+      if (perm !== 'granted') {
+        toast('Motion access was declined \u2014 enable it in Settings to track steps.');
+        return;
+      }
+    }
+
+    stepCounter.start(currentSteps, async (steps) => {
+      currentSteps = steps;
+      updateStepUI(steps);
+      await setStepsForDate(steps).catch(() => {});
+    });
+    stepsTracking = true;
+    $('#btnToggleSteps').textContent = 'Stop tracking';
+    toast('Tracking steps \u2014 keep the app open while you walk.');
+  });
+
+  $('#btnLogSteps').addEventListener('click', () => {
+    const km = Number(stepsToKm(currentSteps).toFixed(2));
+    openExerciseSheet({ exerciseId: 'walking', amount: km, source: 'steps' });
   });
 
   // ---------------- Profile screen ----------------
@@ -317,11 +613,11 @@
   });
 
   $('#btnExport').addEventListener('click', async () => {
-    const [logs, weights, prof] = await Promise.all([
-      db.foodLogs.toArray(), db.weightLogs.toArray(), getProfile()
+    const [logs, weights, exerciseLogs, stepLogs, prof] = await Promise.all([
+      db.foodLogs.toArray(), db.weightLogs.toArray(), db.exerciseLogs.toArray(), db.stepLogs.toArray(), getProfile()
     ]);
     const safeProfile = { ...prof, aiApiKey: undefined };
-    const blob = new Blob([JSON.stringify({ profile: safeProfile, foodLogs: logs, weightLogs: weights }, null, 2)], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify({ profile: safeProfile, foodLogs: logs, weightLogs: weights, exerciseLogs, stepLogs }, null, 2)], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = `comfort-health-export-${todayStr()}.json`;
@@ -329,8 +625,8 @@
   });
 
   $('#btnReset').addEventListener('click', async () => {
-    if (!confirm('This deletes every meal, weigh-in, and your profile from this device. This cannot be undone. Continue?')) return;
-    await Promise.all([db.profile.clear(), db.foodLogs.clear(), db.weightLogs.clear()]);
+    if (!confirm('This deletes every meal, exercise log, weigh-in, and your profile from this device. This cannot be undone. Continue?')) return;
+    await Promise.all([db.profile.clear(), db.foodLogs.clear(), db.weightLogs.clear(), db.exerciseLogs.clear(), db.stepLogs.clear()]);
     localStorage.clear();
     location.reload();
   });
@@ -338,6 +634,9 @@
   // ---------------- Boot ----------------
   async function boot() {
     profile = await getProfile();
+    populateExerciseSelect();
+    updateExerciseAmountLabel();
+    $$('[data-goto]').forEach(el => el.addEventListener('click', () => showScreen(el.dataset.goto)));
     showScreen('today');
     if (!profile.onboarded) {
       setTimeout(() => { toast('Welcome! Set up your profile to get a personalised calorie goal.', 4000); }, 600);

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'comfort-health-v2';
+const CACHE_NAME = 'comfort-health-v3';
 const APP_SHELL = [
   '/',
   '/index.html',
@@ -7,6 +7,8 @@ const APP_SHELL = [
   '/js/dexie.min.js',
   '/js/db.js',
   '/js/health.js',
+  '/js/exercise.js',
+  '/js/steps.js',
   '/js/ai.js',
   '/js/app.js',
   '/icons/icon-192.png',
